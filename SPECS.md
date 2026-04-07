@@ -8,22 +8,28 @@ message propagation, deduplication, storage, peer tracking, and background tasks
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        ChaincraftNode                        │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │ start_networking()                                    │  │
-│  │ - UDP receive loop                                    │  │
-│  │ - gossip rebroadcast loop                             │  │
-│  │ - digest sync control path                            │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  app_objects: ApplicationObjectRegistry                      │
-│     └── process_message(msg):                                │
-│         - object.is_valid(msg)                               │
-│         - if valid => object.add_message(msg)                │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                            ChaincraftNode                            │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ start_networking()                                             │  │
+│  │ - UDP receive loop                                             │  │
+│  │ - gossip rebroadcast loop                                      │  │
+│  │ - direct control/P2P path (non-gossip sync and requests)       │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Incoming UDP datagram                                               │
+│   ├── SharedMessage gossip path                                      │
+│   │    ├── dedupe by hash + store                                    │
+│   │    ├── app_objects.process_message(msg)                          │
+│   │    │    ├── object.is_valid(msg)                                 │
+│   │    │    └── if valid => object.add_message(msg)                  │
+│   │    └── rebroadcast to peers                                      │
+│   │                                                                  │
+│   └── Direct control/P2P path (no gossip fanout)                     │
+│        └── REQUEST_DIGEST / REQUEST_MESSAGES_SINCE / responses       │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Abstractions
