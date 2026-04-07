@@ -1,16 +1,12 @@
-//! Slush Protocol - Avalanche paper Section 2.2
+//! Snowball Protocol - Avalanche family
 //!
-//! A toy single-decree consensus protocol (NOT Byzantine fault tolerant).
-//! Nodes converge on a binary choice (Red or Blue) via repeated random
-//! sampling: each round, a node broadcasts its color, collects peer colors
-//! from incoming messages, and flips to the majority when >= alpha*k agree.
-//!
-//! Implements `ApplicationObject` so it integrates with ChaincraftNode gossip.
+//! Extends Snowflake by keeping confidence counters per color plus
+//! a consecutive-success counter for fast finalization.
 
 use crate::{
     error::Result,
     network::PeerId,
-    shared::{MessageType, SharedMessage, SharedObjectId},
+    shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
     storage::MemoryStorage,
     ChaincraftNode,
@@ -22,7 +18,6 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Binary color choice (paper uses R/B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Color {
     Red,
@@ -38,52 +33,52 @@ impl std::fmt::Display for Color {
     }
 }
 
-/// A Slush vote message broadcast by a node during a round.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlushVote {
+pub struct SnowballVote {
     pub message_type: String,
     pub node_id: String,
     pub round: u32,
     pub color: Color,
 }
 
-/// Slush consensus state, implements ApplicationObject.
 #[derive(Debug, Clone)]
-pub struct SlushObject {
+pub struct SnowballObject {
     id: SharedObjectId,
     pub node_id: String,
-    pub color: Option<Color>,
+    pub preference: Option<Color>,
     pub accepted: Option<Color>,
     pub k: usize,
     pub alpha: f64,
-    pub m: u32,
+    pub beta: u32,
     pub current_round: u32,
-    votes: Vec<SlushVote>,
+    pub confidence_red: u32,
+    pub confidence_blue: u32,
+    pub last_color: Option<Color>,
+    pub consecutive_count: u32,
+    votes: Vec<SnowballVote>,
     seen_hashes: HashSet<String>,
 }
 
-impl SlushObject {
-    pub fn new(node_id: String, k: usize, alpha: f64, m: u32) -> Self {
+impl SnowballObject {
+    pub fn new(node_id: String, k: usize, alpha: f64, beta: u32) -> Self {
         Self {
             id: SharedObjectId::new(),
             node_id,
-            color: None,
+            preference: None,
             accepted: None,
             k,
             alpha,
-            m,
+            beta,
             current_round: 0,
+            confidence_red: 0,
+            confidence_blue: 0,
+            last_color: None,
+            consecutive_count: 0,
             votes: Vec::new(),
             seen_hashes: HashSet::new(),
         }
     }
 
-    /// Get all collected votes.
-    pub fn votes(&self) -> &[SlushVote] {
-        &self.votes
-    }
-
-    /// Count votes for a given round.
     pub fn count_votes_for_round(&self, round: u32) -> (usize, usize) {
         let mut red = 0usize;
         let mut blue = 0usize;
@@ -98,53 +93,82 @@ impl SlushObject {
         (red, blue)
     }
 
-    /// Process one round of Slush given collected votes. Returns whether color flipped.
     pub fn process_round(&mut self, round: u32) -> bool {
         let (red, blue) = self.count_votes_for_round(round);
-        let threshold = (self.alpha * self.k as f64) as usize;
-        let current = match self.color {
-            Some(c) => c,
-            None => return false,
-        };
-        if red >= threshold && current != Color::Red {
-            self.color = Some(Color::Red);
-            return true;
-        }
-        if blue >= threshold && current != Color::Blue {
-            self.color = Some(Color::Blue);
-            return true;
-        }
-        false
-    }
+        let threshold = ((self.alpha * self.k as f64) as usize).max(1);
 
-    /// Finalize: set accepted = current color.
-    pub fn finalize(&mut self) {
-        self.accepted = self.color;
+        let sample_majority = if red >= threshold && red > blue {
+            Some(Color::Red)
+        } else if blue >= threshold && blue > red {
+            Some(Color::Blue)
+        } else {
+            None
+        };
+
+        let Some(majority) = sample_majority else {
+            return false;
+        };
+
+        match majority {
+            Color::Red => self.confidence_red += 1,
+            Color::Blue => self.confidence_blue += 1,
+        }
+
+        let mut flipped = false;
+        if self.preference.is_none() {
+            self.preference = Some(majority);
+        } else if let Some(pref) = self.preference {
+            let pref_conf = match pref {
+                Color::Red => self.confidence_red,
+                Color::Blue => self.confidence_blue,
+            };
+            let maj_conf = match majority {
+                Color::Red => self.confidence_red,
+                Color::Blue => self.confidence_blue,
+            };
+            if maj_conf > pref_conf {
+                self.preference = Some(majority);
+                flipped = pref != majority;
+            }
+        }
+
+        match self.last_color {
+            Some(last) if last == majority => self.consecutive_count += 1,
+            _ => {
+                self.last_color = Some(majority);
+                self.consecutive_count = 1;
+            },
+        }
+
+        if self.consecutive_count > self.beta {
+            self.accepted = self.preference.or(Some(majority));
+        }
+
+        flipped
     }
 }
 
-/// Create a SlushVote JSON value suitable for `node.create_shared_message_with_data`.
 pub fn create_vote_message(node_id: &str, round: u32, color: Color) -> Value {
     serde_json::json!({
-        "message_type": "SLUSH_VOTE",
+        "message_type": "SNOWBALL_VOTE",
         "node_id": node_id,
         "round": round,
         "color": color,
     })
 }
 
-/// Typed node wrapper for Slush examples.
-pub struct SlushNode {
+/// Typed node wrapper for Snowball examples.
+pub struct SnowballNode {
     node: ChaincraftNode,
     object_id: SharedObjectId,
 }
 
-impl SlushNode {
-    pub async fn new(node_id: String, port: u16, k: usize, alpha: f64, m: u32) -> Result<Self> {
+impl SnowballNode {
+    pub async fn new(node_id: String, port: u16, k: usize, alpha: f64, beta: u32) -> Result<Self> {
         let mut node = ChaincraftNode::new(PeerId::new(), Arc::new(MemoryStorage::new()));
         node.set_port(port);
         let object_id = node
-            .add_shared_object(Box::new(SlushObject::new(node_id, k, alpha, m)))
+            .add_shared_object(Box::new(SnowballObject::new(node_id, k, alpha, beta)))
             .await?;
         Ok(Self { node, object_id })
     }
@@ -178,73 +202,92 @@ impl SlushNode {
     pub async fn node_id(&self) -> Result<String> {
         let registry = self.node.app_objects.read().await;
         let Some(obj) = registry.get(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowballObject not found"));
         };
-        let Some(slush) = obj.as_any().downcast_ref::<SlushObject>() else {
+        let Some(snowball) = obj.as_any().downcast_ref::<SnowballObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowballObject",
             ));
         };
-        Ok(slush.node_id.clone())
+        Ok(snowball.node_id.clone())
     }
 
-    pub async fn color(&self) -> Result<Option<Color>> {
+    pub async fn preference(&self) -> Result<Option<Color>> {
         let registry = self.node.app_objects.read().await;
         let Some(obj) = registry.get(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowballObject not found"));
         };
-        let Some(slush) = obj.as_any().downcast_ref::<SlushObject>() else {
+        let Some(snowball) = obj.as_any().downcast_ref::<SnowballObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowballObject",
             ));
         };
-        Ok(slush.color)
+        Ok(snowball.preference)
+    }
+
+    pub async fn accepted(&self) -> Result<Option<Color>> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(crate::error::ChaincraftError::validation("SnowballObject not found"));
+        };
+        let Some(snowball) = obj.as_any().downcast_ref::<SnowballObject>() else {
+            return Err(crate::error::ChaincraftError::validation(
+                "Object type mismatch for SnowballObject",
+            ));
+        };
+        Ok(snowball.accepted)
     }
 
     pub async fn process_round(&mut self, round: u32) -> Result<bool> {
         let mut registry = self.node.app_objects.write().await;
         let Some(obj) = registry.objects.get_mut(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowballObject not found"));
         };
-        let Some(slush) = obj.as_any_mut().downcast_mut::<SlushObject>() else {
+        let Some(snowball) = obj.as_any_mut().downcast_mut::<SnowballObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowballObject",
             ));
         };
-        let flipped = slush.process_round(round);
-        slush.current_round = round;
+        let flipped = snowball.process_round(round);
+        snowball.current_round = round;
         Ok(flipped)
     }
 
-    pub async fn finalize(&mut self) -> Result<Option<Color>> {
-        let mut registry = self.node.app_objects.write().await;
-        let Some(obj) = registry.objects.get_mut(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+    pub async fn state_snapshot(&self) -> Result<(Option<Color>, Option<Color>, u32, u32, u32)> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(crate::error::ChaincraftError::validation("SnowballObject not found"));
         };
-        let Some(slush) = obj.as_any_mut().downcast_mut::<SlushObject>() else {
+        let Some(snowball) = obj.as_any().downcast_ref::<SnowballObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowballObject",
             ));
         };
-        slush.finalize();
-        Ok(slush.accepted)
+        Ok((
+            snowball.preference,
+            snowball.accepted,
+            snowball.confidence_red,
+            snowball.confidence_blue,
+            snowball.consecutive_count,
+        ))
     }
 }
 
 #[async_trait]
-impl ApplicationObject for SlushObject {
+impl ApplicationObject for SnowballObject {
     fn id(&self) -> &SharedObjectId {
         &self.id
     }
 
     fn type_name(&self) -> &'static str {
-        "SlushObject"
+        "SnowballObject"
     }
 
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
-        let vote: std::result::Result<SlushVote, _> = serde_json::from_value(message.data.clone());
+        let vote: std::result::Result<SnowballVote, _> =
+            serde_json::from_value(message.data.clone());
         if let Ok(v) = vote {
-            return Ok(v.message_type == "SLUSH_VOTE");
+            return Ok(v.message_type == "SNOWBALL_VOTE");
         }
         Ok(false)
     }
@@ -255,13 +298,14 @@ impl ApplicationObject for SlushObject {
         }
         self.seen_hashes.insert(message.hash.clone());
 
-        let vote: SlushVote = match serde_json::from_value(message.data.clone()) {
+        let vote: SnowballVote = match serde_json::from_value(message.data.clone()) {
             Ok(v) => v,
             Err(_) => return Ok(()),
         };
 
-        if self.color.is_none() {
-            self.color = Some(vote.color);
+        if self.preference.is_none() {
+            self.preference = Some(vote.color);
+            self.last_color = Some(vote.color);
         }
 
         self.votes.push(vote);
@@ -273,7 +317,7 @@ impl ApplicationObject for SlushObject {
     }
 
     async fn get_latest_digest(&self) -> Result<String> {
-        Ok(format!("{:?}", self.color))
+        Ok(format!("{:?}", self.accepted.or(self.preference)))
     }
 
     async fn has_digest(&self, _digest: &str) -> Result<bool> {
@@ -299,17 +343,24 @@ impl ApplicationObject for SlushObject {
     async fn get_state(&self) -> Result<Value> {
         Ok(serde_json::json!({
             "node_id": self.node_id,
-            "color": format!("{:?}", self.color),
+            "preference": format!("{:?}", self.preference),
             "accepted": format!("{:?}", self.accepted),
             "round": self.current_round,
+            "confidence_red": self.confidence_red,
+            "confidence_blue": self.confidence_blue,
+            "consecutive_count": self.consecutive_count,
             "votes": self.votes.len(),
         }))
     }
 
     async fn reset(&mut self) -> Result<()> {
-        self.color = None;
+        self.preference = None;
         self.accepted = None;
         self.current_round = 0;
+        self.confidence_red = 0;
+        self.confidence_blue = 0;
+        self.last_color = None;
+        self.consecutive_count = 0;
         self.votes.clear();
         self.seen_hashes.clear();
         Ok(())

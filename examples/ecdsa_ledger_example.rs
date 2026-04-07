@@ -6,12 +6,8 @@
 use chaincraft::{
     crypto::ecdsa::ECDSASigner,
     error::Result,
-    examples::ecdsa_ledger::{helpers, ECDSALedgerObject},
-    network::PeerId,
-    storage::MemoryStorage,
-    ChaincraftNode,
+    examples::ecdsa_ledger::{helpers, ECDSALedgerNode},
 };
-use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
@@ -21,12 +17,7 @@ async fn main() -> Result<()> {
     println!("Chaincraft ECDSA Ledger Example");
     println!("===============================\n");
 
-    let id = PeerId::new();
-    let storage = Arc::new(MemoryStorage::new());
-    let mut node = ChaincraftNode::new(id, storage);
-    node.set_port(0);
-    node.add_shared_object(Box::new(ECDSALedgerObject::new()))
-        .await?;
+    let mut node = ECDSALedgerNode::new(0).await?;
     node.start().await?;
 
     let alice = ECDSASigner::new()?;
@@ -36,24 +27,19 @@ async fn main() -> Result<()> {
 
     // Alice "mints" 100 (first tx from new address)
     let tx1 = helpers::create_transfer(alice_pk.clone(), bob_pk.clone(), 50, 0, &alice)?;
-    node.create_shared_message_with_data(tx1).await?;
+    node.publish(tx1).await?;
     println!("Alice -> Bob: 50 (first tx = mint)");
     sleep(Duration::from_millis(200)).await;
 
     // Bob -> Alice: 20
     let tx2 = helpers::create_transfer(bob_pk.clone(), alice_pk.clone(), 20, 0, &bob)?;
-    node.create_shared_message_with_data(tx2).await?;
+    node.publish(tx2).await?;
     println!("Bob -> Alice: 20");
     sleep(Duration::from_millis(200)).await;
 
-    let objs = node.shared_objects().await;
-    if let Some(obj) = objs.first() {
-        if let Some(ledger) = obj.as_any().downcast_ref::<ECDSALedgerObject>() {
-            println!("\nLedger entries: {}", ledger.entries().len());
-            println!("Alice balance: {}", ledger.balance(&alice_pk));
-            println!("Bob balance: {}", ledger.balance(&bob_pk));
-        }
-    }
+    println!("\nLedger entries: {}", node.entry_count().await?);
+    println!("Alice balance: {}", node.balance(&alice_pk).await?);
+    println!("Bob balance: {}", node.balance(&bob_pk).await?);
 
     node.close().await?;
     println!("Done.");

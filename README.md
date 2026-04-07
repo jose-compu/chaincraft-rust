@@ -72,7 +72,7 @@ Add Chaincraft Rust to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chaincraft = "0.2.4"
+chaincraft = "0.3.2"
 ```
 
 ### Basic Example
@@ -195,7 +195,7 @@ Enable features in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chaincraft = { version = "0.2.4", features = ["persistent", "indexing"] }
+chaincraft = { version = "0.3.2", features = ["persistent", "indexing"] }
 ```
 
 ## Development

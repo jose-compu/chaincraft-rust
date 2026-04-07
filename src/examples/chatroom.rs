@@ -14,8 +14,11 @@ use crate::{
         KeyType, PrivateKey, PublicKey, Signature,
     },
     error::{ChaincraftError, Result},
+    network::PeerId,
     shared::{MessageType, SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    storage::MemoryStorage,
+    ChaincraftNode,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -23,6 +26,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Chatroom message types
@@ -490,6 +494,76 @@ impl ApplicationObject for ChatroomObject {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+/// Typed node wrapper for Chatroom examples.
+pub struct ChatroomNode {
+    node: ChaincraftNode,
+    object_id: SharedObjectId,
+}
+
+impl ChatroomNode {
+    pub async fn new(port: u16) -> Result<Self> {
+        let mut node = ChaincraftNode::new(PeerId::new(), Arc::new(MemoryStorage::new()));
+        node.set_port(port);
+        let object_id = node
+            .add_shared_object(Box::new(ChatroomObject::new()))
+            .await?;
+        Ok(Self { node, object_id })
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        self.node.start().await
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.node.close().await
+    }
+
+    pub async fn connect_to_peer(&mut self, addr: &str) -> Result<()> {
+        self.node.connect_to_peer(addr).await
+    }
+
+    pub fn host(&self) -> &str {
+        self.node.host()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.node.port()
+    }
+
+    pub fn id(&self) -> &crate::network::PeerId {
+        self.node.id()
+    }
+
+    pub async fn publish(&mut self, data: Value) -> Result<String> {
+        self.node.create_shared_message_with_data(data).await
+    }
+
+    pub async fn chatroom_message_count(&self, room: &str) -> Result<usize> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("ChatroomObject not found"));
+        };
+        let Some(chatroom) = obj.as_any().downcast_ref::<ChatroomObject>() else {
+            return Err(ChaincraftError::validation("Object type mismatch for ChatroomObject"));
+        };
+        Ok(chatroom
+            .get_chatroom(room)
+            .map(|r| r.messages.len())
+            .unwrap_or(0))
+    }
+
+    pub async fn chatroom_names(&self) -> Result<Vec<String>> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("ChatroomObject not found"));
+        };
+        let Some(chatroom) = obj.as_any().downcast_ref::<ChatroomObject>() else {
+            return Err(ChaincraftError::validation("Object type mismatch for ChatroomObject"));
+        };
+        Ok(chatroom.get_chatrooms().keys().cloned().collect())
     }
 }
 
