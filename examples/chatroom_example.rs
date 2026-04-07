@@ -13,13 +13,8 @@
 use chaincraft::{
     crypto::ecdsa::ECDSASigner,
     error::Result,
-    examples::chatroom::{helpers, ChatroomObject},
-    network::PeerId,
-    shared_object::ApplicationObject,
-    storage::MemoryStorage,
-    ChaincraftNode,
+    examples::chatroom::{helpers, ChatroomNode},
 };
-use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
@@ -29,12 +24,7 @@ async fn main() -> Result<()> {
     println!("Chaincraft Chatroom Example");
     println!("===========================\n");
 
-    let id = PeerId::new();
-    let storage = Arc::new(MemoryStorage::new());
-    let mut node = ChaincraftNode::new(id, storage);
-
-    let chatroom_obj: Box<dyn ApplicationObject> = Box::new(ChatroomObject::new());
-    node.add_shared_object(chatroom_obj).await?;
+    let mut node = ChatroomNode::new(0).await?;
     node.start().await?;
 
     println!("Node started with peer ID: {}", node.id());
@@ -42,7 +32,7 @@ async fn main() -> Result<()> {
     let admin_signer = ECDSASigner::new()?;
 
     let create_msg = helpers::create_chatroom_message("rust_chatroom".to_string(), &admin_signer)?;
-    node.create_shared_message_with_data(create_msg).await?;
+    node.publish(create_msg).await?;
 
     println!("Created chatroom 'rust_chatroom'");
     sleep(Duration::from_millis(200)).await;
@@ -52,21 +42,17 @@ async fn main() -> Result<()> {
         "Hello from Chaincraft Rust!".to_string(),
         &admin_signer,
     )?;
-    node.create_shared_message_with_data(post_msg).await?;
+    node.publish(post_msg).await?;
 
     println!("Posted message to chatroom");
     sleep(Duration::from_millis(200)).await;
 
-    let shared_objects = node.shared_objects().await;
-    if let Some(obj) = shared_objects.first() {
-        if let Some(chatroom_obj) = obj.as_any().downcast_ref::<ChatroomObject>() {
-            let chatrooms = chatroom_obj.get_chatrooms();
-            println!("\nChatrooms: {:?}", chatrooms.keys().collect::<Vec<_>>());
-            if let Some(room) = chatrooms.get("rust_chatroom") {
-                println!("Messages in rust_chatroom: {}", room.messages.len());
-            }
-        }
-    }
+    let names = node.chatroom_names().await?;
+    println!("\nChatrooms: {names:?}");
+    println!(
+        "Messages in rust_chatroom: {}",
+        node.chatroom_message_count("rust_chatroom").await?
+    );
 
     println!("\nShutting down...");
     node.close().await?;

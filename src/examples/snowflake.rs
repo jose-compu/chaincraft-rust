@@ -1,16 +1,12 @@
-//! Slush Protocol - Avalanche paper Section 2.2
+//! Snowflake Protocol - Avalanche paper Section 2.3
 //!
-//! A toy single-decree consensus protocol (NOT Byzantine fault tolerant).
-//! Nodes converge on a binary choice (Red or Blue) via repeated random
-//! sampling: each round, a node broadcasts its color, collects peer colors
-//! from incoming messages, and flips to the majority when >= alpha*k agree.
-//!
-//! Implements `ApplicationObject` so it integrates with ChaincraftNode gossip.
+//! BFT single-decree consensus with a consecutive-success counter.
+//! This object uses Chaincraft gossip messages for vote exchange.
 
 use crate::{
     error::Result,
     network::PeerId,
-    shared::{MessageType, SharedMessage, SharedObjectId},
+    shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
     storage::MemoryStorage,
     ChaincraftNode,
@@ -22,7 +18,6 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Binary color choice (paper uses R/B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Color {
     Red,
@@ -38,32 +33,31 @@ impl std::fmt::Display for Color {
     }
 }
 
-/// A Slush vote message broadcast by a node during a round.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlushVote {
+pub struct SnowflakeVote {
     pub message_type: String,
     pub node_id: String,
     pub round: u32,
     pub color: Color,
 }
 
-/// Slush consensus state, implements ApplicationObject.
 #[derive(Debug, Clone)]
-pub struct SlushObject {
+pub struct SnowflakeObject {
     id: SharedObjectId,
     pub node_id: String,
     pub color: Option<Color>,
     pub accepted: Option<Color>,
     pub k: usize,
     pub alpha: f64,
-    pub m: u32,
+    pub beta: u32,
     pub current_round: u32,
-    votes: Vec<SlushVote>,
+    pub consecutive_count: u32,
+    votes: Vec<SnowflakeVote>,
     seen_hashes: HashSet<String>,
 }
 
-impl SlushObject {
-    pub fn new(node_id: String, k: usize, alpha: f64, m: u32) -> Self {
+impl SnowflakeObject {
+    pub fn new(node_id: String, k: usize, alpha: f64, beta: u32) -> Self {
         Self {
             id: SharedObjectId::new(),
             node_id,
@@ -71,19 +65,14 @@ impl SlushObject {
             accepted: None,
             k,
             alpha,
-            m,
+            beta,
             current_round: 0,
+            consecutive_count: 0,
             votes: Vec::new(),
             seen_hashes: HashSet::new(),
         }
     }
 
-    /// Get all collected votes.
-    pub fn votes(&self) -> &[SlushVote] {
-        &self.votes
-    }
-
-    /// Count votes for a given round.
     pub fn count_votes_for_round(&self, round: u32) -> (usize, usize) {
         let mut red = 0usize;
         let mut blue = 0usize;
@@ -98,53 +87,68 @@ impl SlushObject {
         (red, blue)
     }
 
-    /// Process one round of Slush given collected votes. Returns whether color flipped.
     pub fn process_round(&mut self, round: u32) -> bool {
         let (red, blue) = self.count_votes_for_round(round);
-        let threshold = (self.alpha * self.k as f64) as usize;
-        let current = match self.color {
-            Some(c) => c,
-            None => return false,
-        };
-        if red >= threshold && current != Color::Red {
-            self.color = Some(Color::Red);
-            return true;
-        }
-        if blue >= threshold && current != Color::Blue {
-            self.color = Some(Color::Blue);
-            return true;
-        }
-        false
-    }
+        let threshold = ((self.alpha * self.k as f64) as usize).max(1);
 
-    /// Finalize: set accepted = current color.
-    pub fn finalize(&mut self) {
-        self.accepted = self.color;
+        let sampled_majority = if red >= threshold && red > blue {
+            Some(Color::Red)
+        } else if blue >= threshold && blue > red {
+            Some(Color::Blue)
+        } else {
+            None
+        };
+
+        let Some(majority) = sampled_majority else {
+            return false;
+        };
+
+        let flipped = match self.color {
+            Some(current) if current != majority => {
+                self.color = Some(majority);
+                self.consecutive_count = 1;
+                true
+            },
+            Some(_) => {
+                self.consecutive_count += 1;
+                false
+            },
+            None => {
+                self.color = Some(majority);
+                self.consecutive_count = 1;
+                false
+            },
+        };
+
+        if self.consecutive_count > self.beta {
+            self.accepted = self.color;
+        }
+
+        flipped
     }
 }
 
-/// Create a SlushVote JSON value suitable for `node.create_shared_message_with_data`.
 pub fn create_vote_message(node_id: &str, round: u32, color: Color) -> Value {
     serde_json::json!({
-        "message_type": "SLUSH_VOTE",
+        "message_type": "SNOWFLAKE_VOTE",
         "node_id": node_id,
         "round": round,
         "color": color,
     })
 }
 
-/// Typed node wrapper for Slush examples.
-pub struct SlushNode {
+/// Typed node wrapper for Snowflake examples.
+pub struct SnowflakeNode {
     node: ChaincraftNode,
     object_id: SharedObjectId,
 }
 
-impl SlushNode {
-    pub async fn new(node_id: String, port: u16, k: usize, alpha: f64, m: u32) -> Result<Self> {
+impl SnowflakeNode {
+    pub async fn new(node_id: String, port: u16, k: usize, alpha: f64, beta: u32) -> Result<Self> {
         let mut node = ChaincraftNode::new(PeerId::new(), Arc::new(MemoryStorage::new()));
         node.set_port(port);
         let object_id = node
-            .add_shared_object(Box::new(SlushObject::new(node_id, k, alpha, m)))
+            .add_shared_object(Box::new(SnowflakeObject::new(node_id, k, alpha, beta)))
             .await?;
         Ok(Self { node, object_id })
     }
@@ -178,73 +182,86 @@ impl SlushNode {
     pub async fn node_id(&self) -> Result<String> {
         let registry = self.node.app_objects.read().await;
         let Some(obj) = registry.get(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowflakeObject not found"));
         };
-        let Some(slush) = obj.as_any().downcast_ref::<SlushObject>() else {
+        let Some(snowflake) = obj.as_any().downcast_ref::<SnowflakeObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowflakeObject",
             ));
         };
-        Ok(slush.node_id.clone())
+        Ok(snowflake.node_id.clone())
     }
 
     pub async fn color(&self) -> Result<Option<Color>> {
         let registry = self.node.app_objects.read().await;
         let Some(obj) = registry.get(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowflakeObject not found"));
         };
-        let Some(slush) = obj.as_any().downcast_ref::<SlushObject>() else {
+        let Some(snowflake) = obj.as_any().downcast_ref::<SnowflakeObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowflakeObject",
             ));
         };
-        Ok(slush.color)
+        Ok(snowflake.color)
+    }
+
+    pub async fn accepted(&self) -> Result<Option<Color>> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(crate::error::ChaincraftError::validation("SnowflakeObject not found"));
+        };
+        let Some(snowflake) = obj.as_any().downcast_ref::<SnowflakeObject>() else {
+            return Err(crate::error::ChaincraftError::validation(
+                "Object type mismatch for SnowflakeObject",
+            ));
+        };
+        Ok(snowflake.accepted)
     }
 
     pub async fn process_round(&mut self, round: u32) -> Result<bool> {
         let mut registry = self.node.app_objects.write().await;
         let Some(obj) = registry.objects.get_mut(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+            return Err(crate::error::ChaincraftError::validation("SnowflakeObject not found"));
         };
-        let Some(slush) = obj.as_any_mut().downcast_mut::<SlushObject>() else {
+        let Some(snowflake) = obj.as_any_mut().downcast_mut::<SnowflakeObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowflakeObject",
             ));
         };
-        let flipped = slush.process_round(round);
-        slush.current_round = round;
+        let flipped = snowflake.process_round(round);
+        snowflake.current_round = round;
         Ok(flipped)
     }
 
-    pub async fn finalize(&mut self) -> Result<Option<Color>> {
-        let mut registry = self.node.app_objects.write().await;
-        let Some(obj) = registry.objects.get_mut(&self.object_id) else {
-            return Err(crate::error::ChaincraftError::validation("SlushObject not found"));
+    pub async fn state_snapshot(&self) -> Result<(Option<Color>, Option<Color>, u32)> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(crate::error::ChaincraftError::validation("SnowflakeObject not found"));
         };
-        let Some(slush) = obj.as_any_mut().downcast_mut::<SlushObject>() else {
+        let Some(snowflake) = obj.as_any().downcast_ref::<SnowflakeObject>() else {
             return Err(crate::error::ChaincraftError::validation(
-                "Object type mismatch for SlushObject",
+                "Object type mismatch for SnowflakeObject",
             ));
         };
-        slush.finalize();
-        Ok(slush.accepted)
+        Ok((snowflake.color, snowflake.accepted, snowflake.consecutive_count))
     }
 }
 
 #[async_trait]
-impl ApplicationObject for SlushObject {
+impl ApplicationObject for SnowflakeObject {
     fn id(&self) -> &SharedObjectId {
         &self.id
     }
 
     fn type_name(&self) -> &'static str {
-        "SlushObject"
+        "SnowflakeObject"
     }
 
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
-        let vote: std::result::Result<SlushVote, _> = serde_json::from_value(message.data.clone());
+        let vote: std::result::Result<SnowflakeVote, _> =
+            serde_json::from_value(message.data.clone());
         if let Ok(v) = vote {
-            return Ok(v.message_type == "SLUSH_VOTE");
+            return Ok(v.message_type == "SNOWFLAKE_VOTE");
         }
         Ok(false)
     }
@@ -255,7 +272,7 @@ impl ApplicationObject for SlushObject {
         }
         self.seen_hashes.insert(message.hash.clone());
 
-        let vote: SlushVote = match serde_json::from_value(message.data.clone()) {
+        let vote: SnowflakeVote = match serde_json::from_value(message.data.clone()) {
             Ok(v) => v,
             Err(_) => return Ok(()),
         };
@@ -273,7 +290,7 @@ impl ApplicationObject for SlushObject {
     }
 
     async fn get_latest_digest(&self) -> Result<String> {
-        Ok(format!("{:?}", self.color))
+        Ok(format!("{:?}", self.accepted.or(self.color)))
     }
 
     async fn has_digest(&self, _digest: &str) -> Result<bool> {
@@ -302,6 +319,7 @@ impl ApplicationObject for SlushObject {
             "color": format!("{:?}", self.color),
             "accepted": format!("{:?}", self.accepted),
             "round": self.current_round,
+            "consecutive_count": self.consecutive_count,
             "votes": self.votes.len(),
         }))
     }
@@ -310,6 +328,7 @@ impl ApplicationObject for SlushObject {
         self.color = None;
         self.accepted = None;
         self.current_round = 0;
+        self.consecutive_count = 0;
         self.votes.clear();
         self.seen_hashes.clear();
         Ok(())

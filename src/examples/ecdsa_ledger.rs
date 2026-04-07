@@ -6,14 +6,18 @@
 use crate::{
     crypto::ecdsa::{ECDSASignature, ECDSAVerifier},
     error::{ChaincraftError, Result},
+    network::PeerId,
     shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    storage::MemoryStorage,
+    ChaincraftNode,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "message_type")]
@@ -246,6 +250,69 @@ impl ApplicationObject for ECDSALedgerObject {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+/// Typed node wrapper for ECDSA ledger examples.
+pub struct ECDSALedgerNode {
+    node: ChaincraftNode,
+    object_id: SharedObjectId,
+}
+
+impl ECDSALedgerNode {
+    pub async fn new(port: u16) -> Result<Self> {
+        let mut node = ChaincraftNode::new(PeerId::new(), Arc::new(MemoryStorage::new()));
+        node.set_port(port);
+        let object_id = node
+            .add_shared_object(Box::new(ECDSALedgerObject::new()))
+            .await?;
+        Ok(Self { node, object_id })
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        self.node.start().await
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.node.close().await
+    }
+
+    pub async fn connect_to_peer(&mut self, addr: &str) -> Result<()> {
+        self.node.connect_to_peer(addr).await
+    }
+
+    pub fn host(&self) -> &str {
+        self.node.host()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.node.port()
+    }
+
+    pub async fn publish(&mut self, data: serde_json::Value) -> Result<String> {
+        self.node.create_shared_message_with_data(data).await
+    }
+
+    pub async fn entry_count(&self) -> Result<usize> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("ECDSALedgerObject not found"));
+        };
+        let Some(ledger) = obj.as_any().downcast_ref::<ECDSALedgerObject>() else {
+            return Err(ChaincraftError::validation("Object type mismatch for ECDSALedgerObject"));
+        };
+        Ok(ledger.entries().len())
+    }
+
+    pub async fn balance(&self, account: &str) -> Result<u64> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("ECDSALedgerObject not found"));
+        };
+        let Some(ledger) = obj.as_any().downcast_ref::<ECDSALedgerObject>() else {
+            return Err(ChaincraftError::validation("Object type mismatch for ECDSALedgerObject"));
+        };
+        Ok(ledger.balance(account))
     }
 }
 

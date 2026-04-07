@@ -12,13 +12,8 @@
 
 use chaincraft::{
     error::Result,
-    examples::randomness_beacon::{helpers, RandomnessBeaconObject},
-    network::PeerId,
-    shared_object::ApplicationObject,
-    storage::MemoryStorage,
-    ChaincraftNode,
+    examples::randomness_beacon::{helpers, RandomnessBeaconNode},
 };
-use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
@@ -28,16 +23,9 @@ async fn main() -> Result<()> {
     println!("Chaincraft Randomness Beacon Example");
     println!("=====================================\n");
 
-    let beacon = RandomnessBeaconObject::new(60, 2)?;
-    let my_address = beacon.my_validator_address.clone();
-
-    let id = PeerId::new();
-    let storage = Arc::new(MemoryStorage::new());
-    let mut node = ChaincraftNode::new(id, storage);
-
-    let beacon_obj: Box<dyn ApplicationObject> = Box::new(beacon);
-    node.add_shared_object(beacon_obj).await?;
+    let mut node = RandomnessBeaconNode::new(0, 60, 2).await?;
     node.start().await?;
+    let my_address = node.validator_address().await?;
 
     println!(
         "Node started. Validator address: {}...",
@@ -53,17 +41,12 @@ async fn main() -> Result<()> {
         &reg_signer,
     )?;
 
-    node.create_shared_message_with_data(reg_msg).await?;
+    node.publish(reg_msg).await?;
     println!("Validator registration sent");
     sleep(Duration::from_millis(200)).await;
 
-    let shared_objects = node.shared_objects().await;
-    if let Some(obj) = shared_objects.first() {
-        if obj.type_name() == "RandomnessBeacon" {
-            let state = obj.get_state().await?;
-            println!("\nBeacon state: {}", serde_json::to_string_pretty(&state).unwrap());
-        }
-    }
+    let state = node.beacon_state().await?;
+    println!("\nBeacon state: {}", serde_json::to_string_pretty(&state).unwrap());
 
     println!("\nShutting down...");
     node.close().await?;

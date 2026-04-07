@@ -4,14 +4,18 @@ use crate::{
         KeyType, PrivateKey, PublicKey, Signature,
     },
     error::{ChaincraftError, Result},
+    network::PeerId,
     shared::{MessageType, SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    storage::MemoryStorage,
+    ChaincraftNode,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Randomness beacon message types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -572,6 +576,67 @@ impl ApplicationObject for RandomnessBeaconObject {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+/// Typed node wrapper for Randomness Beacon examples.
+pub struct RandomnessBeaconNode {
+    node: ChaincraftNode,
+    object_id: SharedObjectId,
+}
+
+impl RandomnessBeaconNode {
+    pub async fn new(port: u16, round_duration_secs: u64, threshold: u64) -> Result<Self> {
+        let mut node = ChaincraftNode::new(PeerId::new(), Arc::new(MemoryStorage::new()));
+        node.set_port(port);
+        let beacon = RandomnessBeaconObject::new(round_duration_secs, threshold)?;
+        let object_id = node.add_shared_object(Box::new(beacon)).await?;
+        Ok(Self { node, object_id })
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        self.node.start().await
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.node.close().await
+    }
+
+    pub async fn connect_to_peer(&mut self, addr: &str) -> Result<()> {
+        self.node.connect_to_peer(addr).await
+    }
+
+    pub fn host(&self) -> &str {
+        self.node.host()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.node.port()
+    }
+
+    pub async fn publish(&mut self, data: serde_json::Value) -> Result<String> {
+        self.node.create_shared_message_with_data(data).await
+    }
+
+    pub async fn validator_address(&self) -> Result<String> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("RandomnessBeaconObject not found"));
+        };
+        let Some(beacon) = obj.as_any().downcast_ref::<RandomnessBeaconObject>() else {
+            return Err(ChaincraftError::validation(
+                "Object type mismatch for RandomnessBeaconObject",
+            ));
+        };
+        Ok(beacon.my_validator_address.clone())
+    }
+
+    pub async fn beacon_state(&self) -> Result<serde_json::Value> {
+        let registry = self.node.app_objects.read().await;
+        let Some(obj) = registry.get(&self.object_id) else {
+            return Err(ChaincraftError::validation("RandomnessBeaconObject not found"));
+        };
+        obj.get_state().await
     }
 }
 
