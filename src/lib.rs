@@ -10,6 +10,7 @@
 
 // Modules
 pub mod consensus;
+pub mod core_objects;
 pub mod crypto;
 pub mod discovery;
 pub mod error;
@@ -29,6 +30,11 @@ pub use node::{clear_local_registry, ChaincraftNode};
 pub use shared::{SharedMessage, SharedObject, SharedObjectId, SharedObjectRegistry};
 
 // Application object re-exports
+pub use core_objects::{
+    BalanceLedger, Blockchain, CacheObject, CoreSharedObject, DAGObject, DocumentCache, Mempool,
+    MerkelizedObject, MerkleizedObject, NativeSharedObject, NonMerkelizedObject, TransactionChain,
+    UTXOLedger,
+};
 pub use shared_object::{
     ApplicationObject, ApplicationObjectRegistry, MerkelizedChain, MessageChain, SimpleSharedNumber,
 };

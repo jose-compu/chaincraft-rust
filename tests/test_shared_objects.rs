@@ -1,9 +1,6 @@
 use chaincraft::{
-    clear_local_registry,
-    network::PeerId,
-    shared_object::{ApplicationObject, SimpleSharedNumber},
-    storage::MemoryStorage,
-    ChaincraftNode,
+    clear_local_registry, network::PeerId, shared_object::ApplicationObject,
+    storage::MemoryStorage, BalanceLedger, ChaincraftNode,
 };
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -20,9 +17,9 @@ async fn create_network(num_nodes: usize) -> Vec<ChaincraftNode> {
         node.set_port(0);
         node.disable_local_discovery();
 
-        // Add a SimpleSharedNumber object to each node
-        let shared_number: Box<dyn ApplicationObject> = Box::new(SimpleSharedNumber::new());
-        node.add_shared_object(shared_number).await.unwrap();
+        // Add a BalanceLedger object to each node.
+        let ledger: Box<dyn ApplicationObject> = Box::new(BalanceLedger::new());
+        node.add_shared_object(ledger).await.unwrap();
 
         node.start().await.unwrap();
         nodes.push(node);
@@ -75,8 +72,13 @@ async fn test_shared_object_propagation() {
 
     // Create messages from each node
     for i in 0..nodes.len() {
-        let value = (i + 1) as i64;
-        let data = serde_json::json!(value);
+        let value = (i + 1) as f64;
+        let account = format!("user-{i}");
+        let data = serde_json::json!({
+            "action": "credit",
+            "account": account,
+            "amount": value,
+        });
         nodes[i]
             .create_shared_message_with_data(data)
             .await
@@ -88,29 +90,23 @@ async fn test_shared_object_propagation() {
         for (j, n) in nodes.iter().enumerate() {
             let shared_objects = n.shared_objects().await;
             if let Some(obj) = shared_objects.first() {
-                if let Some(shared_number) = obj.as_any().downcast_ref::<SimpleSharedNumber>() {
-                    println!("Node {}: Shared number: {}", j, shared_number.get_number());
+                if let Some(ledger) = obj.as_any().downcast_ref::<BalanceLedger>() {
+                    println!("Node {}: Ledger entries: {}", j, ledger.balances.len());
                 }
             }
         }
     }
 
-    // Calculate expected total
-    let expected_number: i64 = (1..=num_nodes as i64).sum();
-
-    // Wait for propagation (simplified - in a real network this would involve gossip protocol)
-    // For now, we just verify that each node processed its own message
+    // Wait for propagation (simplified); verify each node processed its own message at least.
     for (i, node) in nodes.iter().enumerate() {
         let shared_objects = node.shared_objects().await;
         if let Some(obj) = shared_objects.first() {
-            if let Some(shared_number) = obj.as_any().downcast_ref::<SimpleSharedNumber>() {
-                // Each node should have processed at least its own message
-                assert!(shared_number.get_number() >= (i + 1) as i64);
+            if let Some(ledger) = obj.as_any().downcast_ref::<BalanceLedger>() {
+                let account = format!("user-{i}");
+                assert!(ledger.balances.get(&account).cloned().unwrap_or(0.0) >= (i + 1) as f64);
             }
         }
     }
-
-    println!("Expected total after all propagation: {expected_number}");
 
     // Clean up
     for mut node in nodes {
@@ -123,8 +119,11 @@ async fn test_message_deduplication() {
     let mut node = create_network(1).await.into_iter().next().unwrap();
 
     // Send the same message multiple times
-    let test_value = 42;
-    let data = serde_json::json!(test_value);
+    let data = serde_json::json!({
+        "action": "credit",
+        "account": "alice",
+        "amount": 42.0,
+    });
 
     for _ in 0..5 {
         node.create_shared_message_with_data(data.clone())
@@ -132,12 +131,11 @@ async fn test_message_deduplication() {
             .unwrap();
     }
 
-    // Verify the shared number only incremented once due to deduplication
+    // Verify the ledger only increments once due to digest deduplication.
     let shared_objects = node.shared_objects().await;
     if let Some(obj) = shared_objects.first() {
-        if let Some(shared_number) = obj.as_any().downcast_ref::<SimpleSharedNumber>() {
-            assert_eq!(shared_number.get_number(), test_value);
-            assert_eq!(shared_number.get_messages().len(), 1);
+        if let Some(ledger) = obj.as_any().downcast_ref::<BalanceLedger>() {
+            assert_eq!(ledger.balances.get("alice").cloned().unwrap_or(0.0), 42.0);
         }
     }
 
@@ -150,24 +148,26 @@ async fn test_shared_object_state() {
     let mut node = create_network(1).await.into_iter().next().unwrap();
 
     // Add multiple messages
-    let values = vec![10, 20, 30];
+    let values = vec![10.0, 20.0, 30.0];
     for value in &values {
-        let data = serde_json::json!(value);
+        let data = serde_json::json!({
+            "action": "credit",
+            "account": "alice",
+            "amount": value,
+        });
         node.create_shared_message_with_data(data).await.unwrap();
     }
 
     // Verify the state
     let shared_objects = node.shared_objects().await;
     if let Some(obj) = shared_objects.first() {
-        if let Some(shared_number) = obj.as_any().downcast_ref::<SimpleSharedNumber>() {
-            let expected_sum: i64 = values.iter().sum();
-            assert_eq!(shared_number.get_number(), expected_sum);
-            assert_eq!(shared_number.get_messages().len(), values.len());
+        if let Some(ledger) = obj.as_any().downcast_ref::<BalanceLedger>() {
+            let expected_sum: f64 = values.iter().sum();
+            assert_eq!(ledger.balances.get("alice").cloned().unwrap_or(0.0), expected_sum);
 
             // Test state as JSON
             let state = obj.get_state().await.unwrap();
-            assert_eq!(state["number"], expected_sum);
-            assert_eq!(state["message_count"], values.len());
+            assert_eq!(state["balance_count"], 1);
         }
     }
 

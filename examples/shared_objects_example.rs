@@ -11,11 +11,8 @@
 //! Run with: `cargo run --example shared_objects_example`
 
 use chaincraft::{
-    error::Result,
-    network::PeerId,
-    shared_object::{ApplicationObject, SimpleSharedNumber},
-    storage::MemoryStorage,
-    ChaincraftNode,
+    error::Result, network::PeerId, shared_object::ApplicationObject, storage::MemoryStorage,
+    BalanceLedger, ChaincraftNode,
 };
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -29,8 +26,8 @@ async fn create_network(num_nodes: usize) -> Result<Vec<ChaincraftNode>> {
         let storage = Arc::new(MemoryStorage::new());
         let mut node = ChaincraftNode::new(id, storage);
 
-        let shared_number: Box<dyn ApplicationObject> = Box::new(SimpleSharedNumber::new());
-        node.add_shared_object(shared_number).await?;
+        let ledger: Box<dyn ApplicationObject> = Box::new(BalanceLedger::new());
+        node.add_shared_object(ledger).await?;
         node.start().await?;
         nodes.push(node);
     }
@@ -85,12 +82,16 @@ async fn main() -> Result<()> {
 
     for i in 0..3 {
         let node_idx = i % nodes.len();
-        let value = (i + 1) as i64;
-        let data = serde_json::json!(value);
+        let value = (i + 1) as f64;
+        let data = serde_json::json!({
+            "action": "credit",
+            "account": format!("user-{node_idx}"),
+            "amount": value
+        });
         nodes[node_idx]
             .create_shared_message_with_data(data)
             .await?;
-        println!("Node {node_idx} created shared object (value={value})");
+        println!("Node {node_idx} credited user-{node_idx} with {value}");
         sleep(Duration::from_millis(500)).await;
     }
 
