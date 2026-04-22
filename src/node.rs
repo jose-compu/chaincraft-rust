@@ -469,11 +469,13 @@ impl ChaincraftNode {
         let message = SharedMessage::new(message_type, data.clone());
         let hash = message.hash.clone();
         let json = message.to_json()?;
-        // Store before processing
-        self.storage.put(&hash, json.as_bytes().to_vec()).await?;
-        // Process message through application objects
+        // Process message through application objects first (validation + pipeline).
         let mut app_registry = self.app_objects.write().await;
         let _processed = app_registry.process_message(message).await?;
+        drop(app_registry);
+
+        // Persist only after successful pipeline execution.
+        self.storage.put(&hash, json.as_bytes().to_vec()).await?;
 
         // Broadcast to peers over UDP if networking is enabled
         if let Some(socket) = &self.socket {
@@ -878,14 +880,16 @@ async fn handle_digest_sync_control(
                     continue;
                 }
                 let json = msg.to_json().unwrap_or_default();
+                {
+                    let mut registry = app_objects.write().await;
+                    if registry.process_message(msg.clone()).await.is_err() {
+                        continue;
+                    }
+                }
                 let _ = storage.put(&msg.hash, json.as_bytes().to_vec()).await;
                 {
                     let mut set = known_hashes.write().await;
                     set.insert(msg.hash.clone());
-                }
-                {
-                    let mut registry = app_objects.write().await;
-                    let _ = registry.process_message(msg.clone()).await;
                 }
                 let bytes = msg.to_json().unwrap_or_default().into_bytes();
                 let _ = broadcast_bytes(socket, peers, banned_peers, &bytes).await;
@@ -955,9 +959,7 @@ async fn handle_incoming_datagram(
         return Ok(());
     }
 
-    // Store message
     let json = msg.to_json()?;
-    storage.put(&msg.hash, json.as_bytes().to_vec()).await?;
 
     // Ensure peer is recorded (only if not banned)
     {
@@ -969,11 +971,14 @@ async fn handle_incoming_datagram(
         }
     }
 
-    // Process through application objects
+    // Process through application objects first (validation + pipeline).
     {
         let mut registry = app_objects.write().await;
         let _ = registry.process_message(msg.clone()).await?;
     }
+
+    // Persist message only after successful pipeline execution.
+    storage.put(&msg.hash, json.as_bytes().to_vec()).await?;
 
     // Broadcast to other peers so the message propagates
     let bytes = json.into_bytes();

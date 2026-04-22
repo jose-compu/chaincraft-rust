@@ -19,6 +19,7 @@ pub mod network;
 pub mod node;
 pub mod shared;
 pub mod shared_object;
+pub mod state_memento;
 pub mod storage;
 pub mod types;
 pub mod utils;
@@ -28,12 +29,16 @@ pub use error::{ChaincraftError, Result};
 pub use network::{PeerId, PeerInfo};
 pub use node::{clear_local_registry, ChaincraftNode};
 pub use shared::{SharedMessage, SharedObject, SharedObjectId, SharedObjectRegistry};
+pub use state_memento::{normalize_state_memento, StateMemento};
 
 // Application object re-exports
 pub use core_objects::{
     BalanceLedger, Blockchain, CacheObject, CoreSharedObject, DAGObject, DocumentCache, Mempool,
     MerkelizedObject, MerkleizedObject, NativeSharedObject, NonMerkelizedObject, TransactionChain,
     UTXOLedger,
+};
+pub use examples::blockchain::{
+    helpers as blockchain_helpers, BlockchainNode, BlockchainObject, MempoolObject,
 };
 pub use shared_object::{
     ApplicationObject, ApplicationObjectRegistry, MerkelizedChain, MessageChain, SimpleSharedNumber,

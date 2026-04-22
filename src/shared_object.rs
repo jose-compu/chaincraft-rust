@@ -4,6 +4,7 @@ pub use crate::shared::SharedObjectId;
 use crate::{
     error::{ChaincraftError, Result},
     shared::{MessageType, SharedMessage, SharedObject},
+    state_memento::{normalize_state_memento, StateMemento},
 };
 use async_trait::async_trait;
 use chrono;
@@ -27,8 +28,12 @@ pub trait ApplicationObject: Send + Sync + std::fmt::Debug {
     /// Validate if a message is valid for this object
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool>;
 
-    /// Add a validated message to the object
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()>;
+    /// Add a validated message to the object and optionally emit updated frontier state.
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>>;
 
     /// Check if this object supports merkleized synchronization
     fn is_merkleized(&self) -> bool;
@@ -50,6 +55,18 @@ pub trait ApplicationObject: Send + Sync + std::fmt::Debug {
 
     /// Get messages since a specific digest
     async fn get_messages_since_digest(&self, digest: &str) -> Result<Vec<SharedMessage>>;
+
+    /// Return frontier digests for multi-head structures.
+    fn get_state_digests(&self) -> Vec<String> {
+        vec![]
+    }
+
+    /// Emit a normalized shared pipeline state memento.
+    async fn emit_state_memento(&self) -> Result<StateMemento> {
+        let latest_digest = self.get_latest_digest().await?;
+        let frontier_digests = self.get_state_digests();
+        Ok(normalize_state_memento(&latest_digest, Some(frontier_digests)))
+    }
 
     /// Get the current state as JSON
     async fn get_state(&self) -> Result<Value>;
@@ -134,13 +151,17 @@ impl ApplicationObject for SimpleSharedNumber {
         Ok(message.data.is_i64())
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        _frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         // Deduplicate by hashing the message's data field
         let msg_hash = Self::calculate_message_hash(&message.data);
 
         if self.seen_hashes.contains(&msg_hash) {
             // Already processed this data
-            return Ok(());
+            return Ok(None);
         }
 
         self.seen_hashes.insert(msg_hash);
@@ -152,7 +173,7 @@ impl ApplicationObject for SimpleSharedNumber {
             tracing::info!("SimpleSharedNumber: Added message with data: {}", value);
         }
 
-        Ok(())
+        Ok(Some(self.emit_state_memento().await?))
     }
 
     fn is_merkleized(&self) -> bool {
@@ -182,6 +203,15 @@ impl ApplicationObject for SimpleSharedNumber {
 
     async fn get_messages_since_digest(&self, _digest: &str) -> Result<Vec<SharedMessage>> {
         Ok(Vec::new())
+    }
+
+    fn get_state_digests(&self) -> Vec<String> {
+        let digest = self.number.to_string();
+        if digest.is_empty() {
+            vec![]
+        } else {
+            vec![digest]
+        }
     }
 
     async fn get_state(&self) -> Result<Value> {
@@ -381,14 +411,18 @@ impl ApplicationObject for MerkelizedChain {
         Ok(false)
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let Some(hash) = message.data.as_str() else {
-            return Ok(());
+            return Ok(None);
         };
 
         // Skip if already in chain
         if self.hash_set.contains(hash) {
-            return Ok(());
+            return Ok(None);
         }
 
         // Try to add to chain
@@ -400,7 +434,7 @@ impl ApplicationObject for MerkelizedChain {
             );
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {
@@ -548,14 +582,18 @@ impl ApplicationObject for MessageChain {
         Ok(!message.data.is_null())
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let h = Self::msg_hash(&message);
         if self.seen_hashes.contains(&h) {
-            return Ok(());
+            return Ok(None);
         }
         self.seen_hashes.insert(h);
         self.messages.push(message);
-        Ok(())
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {
@@ -634,6 +672,7 @@ impl ApplicationObject for MessageChain {
 pub struct ApplicationObjectRegistry {
     pub objects: HashMap<SharedObjectId, Box<dyn ApplicationObject>>,
     objects_by_type: HashMap<String, Vec<SharedObjectId>>,
+    registration_order: Vec<SharedObjectId>,
 }
 
 impl ApplicationObjectRegistry {
@@ -641,6 +680,7 @@ impl ApplicationObjectRegistry {
         Self {
             objects: HashMap::new(),
             objects_by_type: HashMap::new(),
+            registration_order: Vec::new(),
         }
     }
 
@@ -654,6 +694,7 @@ impl ApplicationObjectRegistry {
             .or_default()
             .push(id.clone());
 
+        self.registration_order.push(id.clone());
         self.objects.insert(id.clone(), object);
         id
     }
@@ -686,6 +727,7 @@ impl ApplicationObjectRegistry {
                     self.objects_by_type.remove(&type_name);
                 }
             }
+            self.registration_order.retain(|obj_id| obj_id != id);
             Some(object)
         } else {
             None
@@ -694,7 +736,7 @@ impl ApplicationObjectRegistry {
 
     /// Get all object IDs
     pub fn ids(&self) -> Vec<SharedObjectId> {
-        self.objects.keys().cloned().collect()
+        self.registration_order.clone()
     }
 
     /// Get count of objects
@@ -711,30 +753,42 @@ impl ApplicationObjectRegistry {
     pub fn clear(&mut self) {
         self.objects.clear();
         self.objects_by_type.clear();
+        self.registration_order.clear();
     }
 
     /// Process a message against all appropriate objects
     pub async fn process_message(&mut self, message: SharedMessage) -> Result<Vec<SharedObjectId>> {
         let mut processed_objects = Vec::new();
 
-        // Get all object IDs first to avoid borrow checker issues
-        let ids: Vec<SharedObjectId> = self.objects.keys().cloned().collect();
+        // Get all object IDs first to avoid borrow checker issues.
+        let ids: Vec<SharedObjectId> = self.registration_order.clone();
 
-        // Process each object sequentially
-        for id in ids {
-            // Check validity first
-            let is_valid = if let Some(object) = self.objects.get(&id) {
+        // Validation-first: reject if any object rejects.
+        for id in &ids {
+            let is_valid = if let Some(object) = self.objects.get(id) {
                 object.is_valid(&message).await?
             } else {
                 false
             };
+            if !is_valid {
+                return Err(ChaincraftError::validation(
+                    "message rejected by at least one application object",
+                ));
+            }
+        }
 
-            // If valid, add the message
-            if is_valid {
-                if let Some(object) = self.objects.get_mut(&id) {
-                    object.add_message(message.clone()).await?;
-                    processed_objects.push(id);
-                }
+        // Sequential pipeline with optional frontier state memento propagation.
+        let mut frontier_state: Option<StateMemento> = None;
+        for id in ids {
+            if let Some(object) = self.objects.get_mut(&id) {
+                let emitted = object
+                    .add_message(message.clone(), frontier_state.clone())
+                    .await?;
+                frontier_state = match emitted {
+                    Some(memento) => Some(memento),
+                    None => Some(object.emit_state_memento().await?),
+                };
+                processed_objects.push(id);
             }
         }
 

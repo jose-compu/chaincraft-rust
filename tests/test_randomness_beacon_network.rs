@@ -1,10 +1,14 @@
 //! Multi-node Randomness Beacon tests over real UDP/gossip layer
 
 use chaincraft::{
-    clear_local_registry, examples::randomness_beacon::RandomnessBeaconObject, network::PeerId,
-    shared_object::ApplicationObject, storage::MemoryStorage, ChaincraftNode,
+    clear_local_registry,
+    crypto::ecdsa::ECDSASigner,
+    examples::randomness_beacon::{helpers, RandomnessBeaconObject},
+    network::PeerId,
+    shared_object::ApplicationObject,
+    storage::MemoryStorage,
+    ChaincraftNode,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
@@ -54,13 +58,15 @@ async fn test_beacon_three_node_network() {
     connect_mesh(&mut nodes).await;
     sleep(Duration::from_secs(2)).await;
 
-    let msg = json!({
-        "type": "beacon_contribution",
-        "round": 1,
-        "contributor_id": "node_0",
-        "share": "share_0",
-        "proof": "proof_0"
-    });
+    let signer = ECDSASigner::new().unwrap();
+    let msg = helpers::create_validator_registration(
+        signer.get_public_key_pem().unwrap(),
+        signer.get_public_key_pem().unwrap(),
+        "vrf_key_0".to_string(),
+        100,
+        &signer,
+    )
+    .unwrap();
     nodes[0].create_shared_message_with_data(msg).await.unwrap();
 
     assert!(wait_for_sync(&nodes, 1, 10).await);
@@ -77,13 +83,15 @@ async fn test_beacon_multi_contribution_propagation() {
     sleep(Duration::from_secs(2)).await;
 
     for (i, node) in nodes.iter_mut().enumerate() {
-        let msg = json!({
-            "type": "beacon_contribution",
-            "round": 1,
-            "contributor_id": format!("node_{}", i),
-            "share": format!("share_{}", i),
-            "proof": format!("proof_{}", i)
-        });
+        let signer = ECDSASigner::new().unwrap();
+        let msg = helpers::create_validator_registration(
+            signer.get_public_key_pem().unwrap(),
+            signer.get_public_key_pem().unwrap(),
+            format!("vrf_key_{i}"),
+            100,
+            &signer,
+        )
+        .unwrap();
         node.create_shared_message_with_data(msg).await.unwrap();
         sleep(Duration::from_millis(100)).await;
     }

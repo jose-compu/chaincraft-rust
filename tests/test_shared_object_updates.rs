@@ -360,7 +360,7 @@ async fn test_deduplication() {
         serde_json::json!(existing_hash),
     );
 
-    chain.add_message(dup_msg.clone()).await.unwrap();
+    chain.add_message(dup_msg.clone(), None).await.unwrap();
 
     // Length should not increase
     assert_eq!(

@@ -17,6 +17,7 @@ use crate::{
     network::PeerId,
     shared::{MessageType, SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    state_memento::StateMemento,
     storage::MemoryStorage,
     ChaincraftNode,
 };
@@ -401,7 +402,11 @@ impl ApplicationObject for ChatroomObject {
         Ok(msg_result.is_ok())
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let msg: ChatroomMessageType =
             serde_json::from_value(message.data.clone()).map_err(|e| {
                 ChaincraftError::Serialization(crate::error::SerializationError::Json(e))
@@ -432,7 +437,7 @@ impl ApplicationObject for ChatroomObject {
             tracing::warn!("Failed to process chatroom message: {:?}", msg);
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {

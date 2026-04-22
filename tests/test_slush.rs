@@ -48,7 +48,7 @@ async fn test_slush_add_message_adopts_color() {
     let vote_data = create_vote_message("n2", 1, Color::Blue);
     let msg = SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote_data);
     assert!(slush.is_valid(&msg).await.unwrap());
-    slush.add_message(msg).await.unwrap();
+    slush.add_message(msg, None).await.unwrap();
 
     assert_eq!(slush.color, Some(Color::Blue));
     assert_eq!(slush.votes().len(), 1);
@@ -59,8 +59,8 @@ async fn test_slush_deduplication() {
     let mut slush = SlushObject::new("n1".into(), 4, 0.5, 8);
     let vote_data = create_vote_message("n2", 1, Color::Red);
     let msg = SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote_data);
-    slush.add_message(msg.clone()).await.unwrap();
-    slush.add_message(msg).await.unwrap();
+    slush.add_message(msg.clone(), None).await.unwrap();
+    slush.add_message(msg, None).await.unwrap();
     assert_eq!(slush.votes().len(), 1);
 }
 
@@ -71,11 +71,11 @@ async fn test_slush_count_votes() {
     for i in 0..3 {
         let vote = create_vote_message(&format!("peer-{i}"), 1, Color::Blue);
         let msg = SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote);
-        slush.add_message(msg).await.unwrap();
+        slush.add_message(msg, None).await.unwrap();
     }
     let vote = create_vote_message("peer-3", 1, Color::Red);
     let msg = SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote);
-    slush.add_message(msg).await.unwrap();
+    slush.add_message(msg, None).await.unwrap();
 
     let (red, blue) = slush.count_votes_for_round(1);
     assert_eq!(red, 1);
@@ -90,7 +90,7 @@ async fn test_slush_process_round_flips() {
     for i in 0..3 {
         let vote = create_vote_message(&format!("peer-{i}"), 1, Color::Blue);
         let msg = SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote);
-        slush.add_message(msg).await.unwrap();
+        slush.add_message(msg, None).await.unwrap();
     }
     let flipped = slush.process_round(1);
     assert!(flipped);
@@ -105,11 +105,11 @@ async fn test_slush_process_round_no_flip() {
     let v1 = create_vote_message("peer-0", 1, Color::Blue);
     let v2 = create_vote_message("peer-1", 1, Color::Red);
     slush
-        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), v1))
+        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), v1), None)
         .await
         .unwrap();
     slush
-        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), v2))
+        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), v2), None)
         .await
         .unwrap();
     let flipped = slush.process_round(1);
@@ -134,7 +134,7 @@ async fn test_slush_reset() {
     slush.current_round = 5;
     let vote = create_vote_message("peer-0", 1, Color::Red);
     slush
-        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote))
+        .add_message(SharedMessage::new(MessageType::Custom("SLUSH_VOTE".into()), vote), None)
         .await
         .unwrap();
     slush.reset().await.unwrap();
