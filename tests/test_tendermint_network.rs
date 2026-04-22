@@ -1,10 +1,14 @@
 //! Multi-node Tendermint consensus tests over real UDP/gossip layer
 
 use chaincraft::{
-    clear_local_registry, examples::tendermint::TendermintObject, network::PeerId,
-    shared_object::ApplicationObject, storage::MemoryStorage, ChaincraftNode,
+    clear_local_registry,
+    crypto::ecdsa::ECDSASigner,
+    examples::tendermint::{helpers, TendermintObject},
+    network::PeerId,
+    shared_object::ApplicationObject,
+    storage::MemoryStorage,
+    ChaincraftNode,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
@@ -54,7 +58,15 @@ async fn test_tendermint_three_node_network() {
     connect_mesh(&mut nodes).await;
     sleep(Duration::from_secs(2)).await;
 
-    let msg = json!({"type": "tendermint_proposal", "height": 1, "round": 0, "block_hash": "test"});
+    let signer = ECDSASigner::new().unwrap();
+    let msg = helpers::create_proposal_message(
+        1,
+        0,
+        "test".to_string(),
+        signer.get_public_key_pem().unwrap(),
+        &signer,
+    )
+    .unwrap();
     nodes[0].create_shared_message_with_data(msg).await.unwrap();
 
     assert!(wait_for_sync(&nodes, 1, 10).await);
@@ -71,13 +83,15 @@ async fn test_tendermint_multi_message_propagation() {
     sleep(Duration::from_secs(2)).await;
 
     for i in 0..3 {
-        let msg = json!({
-            "type": "tendermint_prevote",
-            "height": 1,
-            "round": 0,
-            "block_hash": "prop1",
-            "validator": format!("validator_{}", i)
-        });
+        let signer = ECDSASigner::new().unwrap();
+        let msg = helpers::create_prevote_message(
+            1,
+            0,
+            Some("prop1".to_string()),
+            format!("validator_{i}"),
+            &signer,
+        )
+        .unwrap();
         nodes[0].create_shared_message_with_data(msg).await.unwrap();
         sleep(Duration::from_millis(100)).await;
     }

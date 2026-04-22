@@ -1,6 +1,7 @@
 //! Shared objects and messages for distributed state management
 
 use crate::error::{ChaincraftError, CryptoError, Result, SerializationError};
+use crate::state_memento::StateMemento;
 use async_trait::async_trait;
 use bincode;
 use hex;
@@ -376,7 +377,11 @@ pub trait SharedObject: Send + Sync + Debug {
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool>;
 
     /// Process a validated message and update the object state
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()>;
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>>;
 
     /// Check if this object supports merkleized synchronization
     fn is_merkleized(&self) -> bool;

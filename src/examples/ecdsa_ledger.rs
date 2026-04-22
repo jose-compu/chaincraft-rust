@@ -9,6 +9,7 @@ use crate::{
     network::PeerId,
     shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    state_memento::StateMemento,
     storage::MemoryStorage,
     ChaincraftNode,
 };
@@ -142,7 +143,11 @@ impl ApplicationObject for ECDSALedgerObject {
         }
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let msg: LedgerMessageType = serde_json::from_value(message.data.clone())
             .map_err(|_| ChaincraftError::validation("Invalid ledger message format"))?;
 
@@ -157,22 +162,22 @@ impl ApplicationObject for ECDSALedgerObject {
             } => {
                 let tx_hash = Self::tx_hash(&from, &to, amount, nonce);
                 if self.seen_tx_hashes.contains(&tx_hash) {
-                    return Ok(());
+                    return Ok(None);
                 }
 
                 let msg_data = message.data.clone();
                 if !self.validate_signature(&msg_data, &signature, &public_key_pem)? {
-                    return Ok(());
+                    return Ok(None);
                 }
 
                 let from_balance = *self.balances.get(&from).unwrap_or(&0);
                 let expected_nonce = *self.nonces.get(&from).unwrap_or(&0);
                 if nonce != expected_nonce {
-                    return Ok(());
+                    return Ok(None);
                 }
                 // Allow first tx from new address (genesis/mint for demo)
                 if from_balance < amount && from_balance > 0 {
-                    return Ok(());
+                    return Ok(None);
                 }
 
                 self.seen_tx_hashes.insert(tx_hash);
@@ -187,7 +192,7 @@ impl ApplicationObject for ECDSALedgerObject {
                 }
                 *self.balances.entry(to).or_insert(0) += amount;
                 self.nonces.insert(from, nonce + 1);
-                Ok(())
+                Ok(None)
             },
         }
     }

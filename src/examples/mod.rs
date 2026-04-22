@@ -1,3 +1,4 @@
+pub mod blockchain;
 pub mod chatroom;
 pub mod ecdsa_ledger;
 pub mod randomness_beacon;

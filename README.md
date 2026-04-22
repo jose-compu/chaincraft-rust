@@ -72,7 +72,7 @@ Add Chaincraft Rust to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chaincraft = "0.3.2"
+chaincraft = "0.4.0"
 ```
 
 ### Basic Example
@@ -195,7 +195,7 @@ Enable features in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-chaincraft = { version = "0.3.2", features = ["persistent", "indexing"] }
+chaincraft = { version = "0.4.0", features = ["persistent", "indexing"] }
 ```
 
 ## Development
@@ -257,6 +257,11 @@ Check out the `examples/` directory for more usage examples:
 - `keypair_generation.rs`: Cryptographic keypair generation and signing
 - `chatroom_example.rs`: Decentralized chatroom protocol (create rooms, post messages)
 - `randomness_beacon_example.rs`: Verifiable randomness beacon
+- `ecdsa_ledger_example.rs`: Signed transfer ledger workflow
+- `slush_example.rs`: Avalanche-family Slush consensus demo
+- `snowflake_example.rs`: Avalanche-family Snowflake consensus demo
+- `snowball_example.rs`: Avalanche-family Snowball consensus demo
+- `blockchain_example.rs`: Memento-aware blockchain pipeline demo
 - `shared_objects_example.rs`: Multi-node network with shared object propagation
 - `proof_of_work_example.rs`: Proof of Work mining and verification
 
@@ -266,7 +271,17 @@ Run examples with:
 cargo run --example basic_node
 cargo run --example chatroom_example
 cargo run --example shared_objects_example
+cargo run --example blockchain_example
 ```
+
+## SPECS v2 (Memento Pipeline)
+
+Rust `0.4.x` targets the SPECS v2 contract:
+
+- `ApplicationObject::add_message(message, frontier_state)` receives an optional memento.
+- Runtime validates all objects first, then processes them linearly.
+- Each object can emit a `StateMemento` forwarded to downstream objects.
+- Messages are persisted and broadcast only after successful pipeline execution.
 
 ## Contributing
 

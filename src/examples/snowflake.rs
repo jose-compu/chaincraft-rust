@@ -8,6 +8,7 @@ use crate::{
     network::PeerId,
     shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    state_memento::StateMemento,
     storage::MemoryStorage,
     ChaincraftNode,
 };
@@ -266,15 +267,19 @@ impl ApplicationObject for SnowflakeObject {
         Ok(false)
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         if self.seen_hashes.contains(&message.hash) {
-            return Ok(());
+            return Ok(None);
         }
         self.seen_hashes.insert(message.hash.clone());
 
         let vote: SnowflakeVote = match serde_json::from_value(message.data.clone()) {
             Ok(v) => v,
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(None),
         };
 
         if self.color.is_none() {
@@ -282,7 +287,7 @@ impl ApplicationObject for SnowflakeObject {
         }
 
         self.votes.push(vote);
-        Ok(())
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {

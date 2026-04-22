@@ -41,11 +41,11 @@ async fn test_non_merkelized_stubs() {
 #[tokio::test]
 async fn test_merkelized_object_basic_digest_flow() {
     let mut obj = MerkelizedObject::new();
-    obj.add_message(msg(serde_json::json!({"i": 1})))
+    obj.add_message(msg(serde_json::json!({"i": 1})), None)
         .await
         .unwrap();
     let d1 = obj.get_latest_digest().await.unwrap();
-    obj.add_message(msg(serde_json::json!({"i": 2})))
+    obj.add_message(msg(serde_json::json!({"i": 2})), None)
         .await
         .unwrap();
     let d2 = obj.get_latest_digest().await.unwrap();
@@ -64,12 +64,12 @@ async fn test_utxo_add_spend_flow() {
         "owner": "alice"
     }));
     assert!(ledger.is_valid(&add).await.unwrap());
-    ledger.add_message(add).await.unwrap();
+    ledger.add_message(add, None).await.unwrap();
     assert!(ledger.utxos.contains_key("u1"));
 
     let spend = msg(serde_json::json!({"action": "utxo_spend", "utxo_id": "u1"}));
     assert!(ledger.is_valid(&spend).await.unwrap());
-    ledger.add_message(spend).await.unwrap();
+    ledger.add_message(spend, None).await.unwrap();
     assert!(!ledger.utxos.contains_key("u1"));
 }
 
@@ -77,16 +77,19 @@ async fn test_utxo_add_spend_flow() {
 async fn test_balance_ledger_credit_debit_transfer() {
     let mut ledger = BalanceLedger::new();
     ledger
-        .add_message(msg(serde_json::json!({
-            "action": "credit",
-            "account": "alice",
-            "amount": 10.0
-        })))
+        .add_message(
+            msg(serde_json::json!({
+                "action": "credit",
+                "account": "alice",
+                "amount": 10.0
+            })),
+            None,
+        )
         .await
         .unwrap();
     let debit = msg(serde_json::json!({"action": "debit", "account": "alice", "amount": 3.0}));
     assert!(ledger.is_valid(&debit).await.unwrap());
-    ledger.add_message(debit).await.unwrap();
+    ledger.add_message(debit, None).await.unwrap();
 
     let transfer = msg(serde_json::json!({
         "action": "transfer",
@@ -95,7 +98,7 @@ async fn test_balance_ledger_credit_debit_transfer() {
         "amount": 4.0
     }));
     assert!(ledger.is_valid(&transfer).await.unwrap());
-    ledger.add_message(transfer).await.unwrap();
+    ledger.add_message(transfer, None).await.unwrap();
     assert_eq!(ledger.balances.get("alice").cloned().unwrap_or(0.0), 3.0);
     assert_eq!(ledger.balances.get("bob").cloned().unwrap_or(0.0), 4.0);
 }
@@ -105,7 +108,7 @@ async fn test_blockchain_previous_digest_rules() {
     let mut chain = Blockchain::new();
     let genesis = msg(serde_json::json!({"previous_digest": "genesis", "height": 1}));
     assert!(chain.is_valid(&genesis).await.unwrap());
-    chain.add_message(genesis).await.unwrap();
+    chain.add_message(genesis, None).await.unwrap();
     let prev = chain.blocks[0]["digest"].as_str().unwrap().to_string();
     let next = msg(serde_json::json!({"previous_digest": prev, "height": 2}));
     assert!(chain.is_valid(&next).await.unwrap());
@@ -114,16 +117,16 @@ async fn test_blockchain_previous_digest_rules() {
 #[tokio::test]
 async fn test_dag_frontier_and_since_digest() {
     let mut dag = DAGObject::new();
-    dag.add_message(msg(serde_json::json!({"parents": [], "payload": "root"})))
+    dag.add_message(msg(serde_json::json!({"parents": [], "payload": "root"})), None)
         .await
         .unwrap();
     let root = dag.get_head_digests()[0].clone();
-    dag.add_message(msg(serde_json::json!({"parents": [root], "payload": "child"})))
+    dag.add_message(msg(serde_json::json!({"parents": [root], "payload": "child"})), None)
         .await
         .unwrap();
     let checkpoint = dag.get_latest_digest().await.unwrap();
     let head = dag.get_head_digests()[0].clone();
-    dag.add_message(msg(serde_json::json!({"parents": [head], "payload": "child-2"})))
+    dag.add_message(msg(serde_json::json!({"parents": [head], "payload": "child-2"})), None)
         .await
         .unwrap();
     let delta = dag.get_messages_since_digest(&checkpoint).await.unwrap();
@@ -134,12 +137,12 @@ async fn test_dag_frontier_and_since_digest() {
 async fn test_transaction_chain_tracks_order() {
     let mut chain = TransactionChain::new();
     chain
-        .add_message(msg(serde_json::json!({"tx_id": "a", "amount": 1})))
+        .add_message(msg(serde_json::json!({"tx_id": "a", "amount": 1})), None)
         .await
         .unwrap();
     let d1 = chain.get_latest_digest().await.unwrap();
     chain
-        .add_message(msg(serde_json::json!({"tx_id": "b", "amount": 2})))
+        .add_message(msg(serde_json::json!({"tx_id": "b", "amount": 2})), None)
         .await
         .unwrap();
     assert_eq!(chain.transactions.len(), 2);
@@ -150,22 +153,25 @@ async fn test_transaction_chain_tracks_order() {
 async fn test_mempool_and_document_cache_ops() {
     let mut mempool = Mempool::new();
     mempool
-        .add_message(msg(serde_json::json!({"from": "a", "to": "b", "amount": 1})))
+        .add_message(msg(serde_json::json!({"from": "a", "to": "b", "amount": 1})), None)
         .await
         .unwrap();
     assert_eq!(mempool.transactions.len(), 1);
     let tx_id = mempool.transactions.keys().next().unwrap().clone();
     mempool
-        .add_message(msg(serde_json::json!({"tx_id": tx_id, "action": "remove"})))
+        .add_message(msg(serde_json::json!({"tx_id": tx_id, "action": "remove"})), None)
         .await
         .unwrap();
     assert!(mempool.transactions.is_empty());
 
     let mut docs = DocumentCache::new();
-    docs.add_message(msg(serde_json::json!({
-        "document_id": "d1",
-        "value": {"title": "hello"}
-    })))
+    docs.add_message(
+        msg(serde_json::json!({
+            "document_id": "d1",
+            "value": {"title": "hello"}
+        })),
+        None,
+    )
     .await
     .unwrap();
     assert_eq!(docs.documents["d1"]["title"], "hello");

@@ -4,6 +4,7 @@ use crate::{
     error::Result,
     shared::{SharedMessage, SharedObjectId},
     shared_object::ApplicationObject,
+    state_memento::StateMemento,
 };
 use async_trait::async_trait;
 use lru::LruCache;
@@ -330,8 +331,12 @@ impl ApplicationObject for NonMerkelizedObject {
         Ok(true)
     }
 
-    async fn add_message(&mut self, _message: SharedMessage) -> Result<()> {
-        Ok(())
+    async fn add_message(
+        &mut self,
+        _message: SharedMessage,
+        _frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {
@@ -420,16 +425,20 @@ impl ApplicationObject for MerkelizedObject {
         Ok(true)
     }
 
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
             .record_message(&mut self.storage, message, digest, parents)
             .await;
-        Ok(())
+        Ok(None)
     }
 
     fn is_merkleized(&self) -> bool {
@@ -545,10 +554,14 @@ impl ApplicationObject for UTXOLedger {
             _ => Ok(false),
         }
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
@@ -575,7 +588,7 @@ impl ApplicationObject for UTXOLedger {
                 self.storage.delete(&format!("utxo:{utxo_id}")).await;
             }
         }
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         true
@@ -684,10 +697,14 @@ impl ApplicationObject for BalanceLedger {
             _ => Ok(false),
         }
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
@@ -738,7 +755,7 @@ impl ApplicationObject for BalanceLedger {
             },
             _ => {},
         }
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         true
@@ -839,10 +856,14 @@ impl ApplicationObject for Blockchain {
             .unwrap_or_default();
         Ok(prev == last)
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
@@ -859,7 +880,7 @@ impl ApplicationObject for Blockchain {
             .unwrap_or_default()
             .to_string();
         self.storage.write(&format!("block:{key}"), block).await;
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         true
@@ -978,10 +999,14 @@ impl ApplicationObject for DAGObject {
         }
         Ok(true)
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
@@ -998,7 +1023,7 @@ impl ApplicationObject for DAGObject {
         let frontier = self.current_frontier_digest();
         self.frontier_state_index
             .insert(frontier, (self.state.messages.len() as isize) - 1);
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         true
@@ -1099,10 +1124,14 @@ impl ApplicationObject for TransactionChain {
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
         Ok(message.data.is_object())
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let digest = compute_digest_value(&message.data);
         if self.state.contains_digest(&digest) {
-            return Ok(());
+            return Ok(None);
         }
         let parents = extract_parent_digests(&message.data);
         self.state
@@ -1116,7 +1145,7 @@ impl ApplicationObject for TransactionChain {
             .unwrap_or_default()
             .to_string();
         self.storage.write(&format!("tx:{key}"), tx).await;
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         true
@@ -1199,7 +1228,11 @@ impl ApplicationObject for CacheObject {
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
         Ok(message.data.is_object())
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let data = message.data.as_object().cloned().unwrap_or_default();
         let key = data
             .get("key")
@@ -1210,13 +1243,13 @@ impl ApplicationObject for CacheObject {
         if data.get("action").and_then(|v| v.as_str()) == Some("delete") {
             self.cache.remove(&key);
             self.storage.delete(&key).await;
-            return Ok(());
+            return Ok(None);
         }
 
         let value = data.get("value").cloned().unwrap_or(message.data);
         self.cache.insert(key.clone(), value.clone());
         self.storage.write(&key, value).await;
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         false
@@ -1293,7 +1326,11 @@ impl ApplicationObject for Mempool {
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
         Ok(message.data.is_object())
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let tx = message.data.as_object().cloned().unwrap_or_default();
         let tx_id = tx
             .get("tx_id")
@@ -1305,7 +1342,7 @@ impl ApplicationObject for Mempool {
             self.transactions.remove(&tx_id);
             self.cache.remove(&tx_id);
             self.storage.delete(&format!("mempool:{tx_id}")).await;
-            return Ok(());
+            return Ok(None);
         }
         let as_value = Value::Object(tx);
         self.transactions.insert(tx_id.clone(), as_value.clone());
@@ -1313,7 +1350,7 @@ impl ApplicationObject for Mempool {
         self.storage
             .write(&format!("mempool:{tx_id}"), as_value)
             .await;
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         false
@@ -1391,7 +1428,11 @@ impl ApplicationObject for DocumentCache {
     async fn is_valid(&self, message: &SharedMessage) -> Result<bool> {
         Ok(message.data.is_object())
     }
-    async fn add_message(&mut self, message: SharedMessage) -> Result<()> {
+    async fn add_message(
+        &mut self,
+        message: SharedMessage,
+        frontier_state: Option<StateMemento>,
+    ) -> Result<Option<StateMemento>> {
         let data = message.data.as_object().cloned().unwrap_or_default();
         let doc_id = data
             .get("doc_id")
@@ -1405,7 +1446,7 @@ impl ApplicationObject for DocumentCache {
             self.documents.remove(&doc_id);
             self.cache.remove(&doc_id);
             self.storage.delete(&format!("doc:{doc_id}")).await;
-            return Ok(());
+            return Ok(None);
         }
 
         let payload = data
@@ -1416,7 +1457,7 @@ impl ApplicationObject for DocumentCache {
         self.documents.insert(doc_id.clone(), payload.clone());
         self.cache.insert(doc_id.clone(), payload.clone());
         self.storage.write(&format!("doc:{doc_id}"), payload).await;
-        Ok(())
+        Ok(None)
     }
     fn is_merkleized(&self) -> bool {
         false
