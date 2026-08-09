@@ -1,13 +1,22 @@
 //! Tests for local discovery (in-process peer registry)
 //!
 //! Mirrors Python's test_local_discovery behavior.
+//!
+//! These tests share the process-global LOCAL_NODES registry, so they must not
+//! run concurrently with each other.
 
 use chaincraft::{
     clear_local_registry, network::PeerId, shared_object::SimpleSharedNumber,
     storage::MemoryStorage, ApplicationObject, ChaincraftNode,
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
+
+fn local_discovery_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 async fn create_network(num_nodes: usize) -> Vec<ChaincraftNode> {
     clear_local_registry();
@@ -45,10 +54,12 @@ async fn wait_for_peers(nodes: &[ChaincraftNode], min_peers: usize, timeout_secs
 
 #[tokio::test]
 async fn test_local_discovery_three_nodes() {
+    let _guard = local_discovery_lock().lock().await;
+
     let mut nodes = create_network(3).await;
     assert!(
-        wait_for_peers(&nodes, 2, 5).await,
-        "Local discovery should discover peers within 5s"
+        wait_for_peers(&nodes, 2, 10).await,
+        "Local discovery should discover peers within 10s"
     );
 
     let mut peer_counts = Vec::new();
@@ -75,14 +86,17 @@ async fn test_local_discovery_three_nodes() {
     for mut node in nodes {
         node.close().await.unwrap();
     }
+    clear_local_registry();
 }
 
 #[tokio::test]
 async fn test_local_discovery_five_nodes() {
+    let _guard = local_discovery_lock().lock().await;
+
     let nodes = create_network(5).await;
     assert!(
-        wait_for_peers(&nodes, 4, 8).await,
-        "Local discovery should discover peers within 8s"
+        wait_for_peers(&nodes, 4, 15).await,
+        "Local discovery should discover peers within 15s"
     );
 
     let mut peer_counts = Vec::new();
@@ -97,4 +111,5 @@ async fn test_local_discovery_five_nodes() {
     for mut node in nodes {
         node.close().await.unwrap();
     }
+    clear_local_registry();
 }

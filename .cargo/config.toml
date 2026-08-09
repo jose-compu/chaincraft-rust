@@ -9,6 +9,10 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
+# Homebrew GMP (required by optional feature vdf-crypto) lives outside default link paths on Apple Silicon.
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/opt/gmp/lib"]
+
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
 rustflags = ["-C", "link-arg=/LTCG"]

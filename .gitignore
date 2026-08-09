@@ -22,3 +22,12 @@ target/
 
 # Publication checklist
 PUBLICATION_CHECKLIST.md
+
+# Coverage artifacts
+lcov.info
+*.profraw
+*.profdata
+coverage/
+
+# Local persistent node databases created during tests/runs
+node_*.db/
