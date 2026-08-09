@@ -7,6 +7,8 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
+// async_trait expands async fns into Pin<Box<dyn Future>> with a redundant #[must_use].
+#![allow(clippy::double_must_use)]
 
 // Modules
 pub mod consensus;
