@@ -85,6 +85,14 @@ pub enum NetworkError {
     /// No peers available
     #[error("No peers available for operation")]
     NoPeersAvailable,
+
+    /// NAT traversal discovery failed
+    #[error("NAT traversal discovery failed: {reason}")]
+    NatDiscoveryFailed { reason: String },
+
+    /// Hole punch session failed
+    #[error("Hole punch to {addr} failed: {reason}")]
+    HolePunchFailed { addr: SocketAddr, reason: String },
 }
 
 /// Cryptographic error types

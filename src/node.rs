@@ -46,6 +46,8 @@ pub struct ChaincraftNode {
     pub app_objects: Arc<RwLock<ApplicationObjectRegistry>>,
     /// Discovery manager
     pub discovery: Option<DiscoveryManager>,
+    /// NAT traversal manager
+    pub nat_traversal: Option<Arc<crate::nat_traversal::NatTraversalManager>>,
     /// Storage backend
     pub storage: Arc<dyn Storage>,
     /// Connected peers
@@ -527,6 +529,18 @@ impl ChaincraftNode {
         self.config.local_discovery = false;
     }
 
+    /// Enable or disable NAT traversal at runtime (must be called before `start`).
+    pub fn set_nat_traversal_enabled(&mut self, enabled: bool) {
+        self.config.nat_traversal.enabled = enabled;
+    }
+
+    /// Return a reference to the NAT traversal manager, if it has been initialized.
+    pub fn nat_traversal_manager(
+        &self,
+    ) -> Option<&Arc<crate::nat_traversal::NatTraversalManager>> {
+        self.nat_traversal.as_ref()
+    }
+
     /// Check if node is running (sync version for compatibility)
     pub fn is_running(&self) -> bool {
         // For tests, we'll use a blocking approach
@@ -578,6 +592,15 @@ impl ChaincraftNode {
         let socket = Arc::new(socket);
         self.socket = Some(socket.clone());
 
+        // Initialize NAT traversal manager if enabled.
+        if self.config.nat_traversal.enabled {
+            let nat_mgr = Arc::new(crate::nat_traversal::NatTraversalManager::new(
+                register_addr,
+                self.config.nat_traversal.clone(),
+            ));
+            self.nat_traversal = Some(nat_mgr);
+        }
+
         let running = self.running.clone();
         let storage = self.storage.clone();
         let app_objects = self.app_objects.clone();
@@ -592,6 +615,7 @@ impl ChaincraftNode {
         // Receive loop
         let banned_peers = self.banned_peers.clone();
         let known_hashes = self.known_hashes.clone();
+        let nat_mgr_recv = self.nat_traversal.clone();
         {
             let socket = socket.clone();
             let running = running.clone();
@@ -619,6 +643,23 @@ impl ChaincraftNode {
                     };
 
                     let data = &buf[..len];
+
+                    // Try to dispatch as a NAT traversal message first.
+                    if let Some(ref nat_mgr) = nat_mgr_recv {
+                        if let Ok(nat_msg) =
+                            serde_json::from_slice::<crate::nat_traversal::HolePunchMessage>(data)
+                        {
+                            if let Some(response) =
+                                nat_mgr.handle_message(nat_msg, addr).await
+                            {
+                                if let Ok(resp_bytes) = serde_json::to_vec(&response) {
+                                    let _ = socket.send_to(&resp_bytes, addr).await;
+                                }
+                            }
+                            continue;
+                        }
+                    }
+
                     if let Err(e) = handle_incoming_datagram(
                         data,
                         addr,
@@ -632,6 +673,28 @@ impl ChaincraftNode {
                     .await
                     {
                         tracing::warn!("Error handling incoming datagram from {}: {:?}", addr, e);
+                    }
+                }
+            });
+        }
+
+        // NAT traversal keep-alive loop
+        if let Some(ref nat_mgr) = self.nat_traversal {
+            let nat_mgr_ka = nat_mgr.clone();
+            let socket_ka = socket.clone();
+            let running_ka = running.clone();
+            let keep_alive_interval = self.config.nat_traversal.keep_alive_interval;
+            tokio::spawn(async move {
+                loop {
+                    if !*running_ka.read().await {
+                        break;
+                    }
+                    tokio::time::sleep(keep_alive_interval).await;
+                    if !*running_ka.read().await {
+                        break;
+                    }
+                    if let Err(e) = nat_mgr_ka.send_keep_alive(&socket_ka).await {
+                        tracing::warn!("NAT keep-alive error: {:?}", e);
                     }
                 }
             });
@@ -1006,6 +1069,8 @@ pub struct NodeConfig {
     pub local_discovery: bool,
     /// Persist peers to storage and load on start (equivalent to Python PEERS in DB)
     pub persist_peers: bool,
+    /// Configuration for the NAT traversal subsystem.
+    pub nat_traversal: crate::nat_traversal::NatTraversalConfig,
 }
 
 impl Default for NodeConfig {
@@ -1017,6 +1082,7 @@ impl Default for NodeConfig {
             consensus_enabled: true,
             local_discovery: true,
             persist_peers: true,
+            nat_traversal: crate::nat_traversal::NatTraversalConfig::default(),
         }
     }
 }
@@ -1094,6 +1160,21 @@ impl ChaincraftNodeBuilder {
         self
     }
 
+    /// Enable or disable the NAT traversal subsystem.
+    pub fn nat_traversal(mut self, enabled: bool) -> Self {
+        self.config.nat_traversal.enabled = enabled;
+        self
+    }
+
+    /// Supply a custom [`NatTraversalConfig`] for this node.
+    pub fn with_nat_traversal_config(
+        mut self,
+        config: crate::nat_traversal::NatTraversalConfig,
+    ) -> Self {
+        self.config.nat_traversal = config;
+        self
+    }
+
     /// Build the node
     pub fn build(self) -> Result<ChaincraftNode> {
         // Generate a new random ID if not provided
@@ -1126,6 +1207,7 @@ impl ChaincraftNodeBuilder {
             registry: Arc::new(RwLock::new(SharedObjectRegistry::new())),
             app_objects: Arc::new(RwLock::new(ApplicationObjectRegistry::new())),
             discovery: None, // Will be initialized during start if needed
+            nat_traversal: None, // Will be initialized during start if NAT traversal is enabled
             storage,
             peers: Arc::new(RwLock::new(HashMap::new())),
             banned_peers: Arc::new(RwLock::new(HashSet::new())),

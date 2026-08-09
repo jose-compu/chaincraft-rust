@@ -17,6 +17,7 @@ pub mod crypto;
 pub mod discovery;
 pub mod error;
 pub mod examples;
+pub mod nat_traversal;
 pub mod network;
 pub mod node;
 pub mod shared;
